@@ -8,6 +8,7 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Optional
 
 import requests
@@ -29,6 +30,9 @@ USER_AGENT = (
 
 
 SPORTSBOOK_SLUG = "bet365"
+
+DEFAULT_DATASET_DIR = Path(__file__).resolve().parent.parent / "dataset"
+DEFAULT_OUTPUT_CSV = DEFAULT_DATASET_DIR / "sbr_mlb_odds.csv"
 
 
 class ParseError(RuntimeError):
@@ -160,6 +164,7 @@ def _parse_market_page(
 ) -> tuple[dict[tuple[int, str], GameMeta], dict[tuple[int, str], Any]]:
     """Returns (meta_by_key, market_by_key) keyed by (game_id, sportsbook_slug)."""
 
+    # Parse SBR's embedded Next.js JSON instead of scraping rendered table DOM.
     html = _fetch(url, timeout_s=timeout_s, max_retries=max_retries, debug=debug)
     data = _parse_next_data(html, url=url)
     model = _extract_odds_table_model(data, url=url)
@@ -242,6 +247,7 @@ def _parse_market_page(
                 result=result,
             )
 
+            # Convert American odds to decimal odds for downstream EV calculations.
             if market == "moneyline":
                 market_by_key[key] = Moneyline(
                     away_odds_dec=american_to_decimal(cur.get("awayOdds")),
@@ -271,6 +277,9 @@ def crawl(
     timeout_s: int,
     debug: bool,
 ) -> int:
+    output_path = Path(output_csv)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
     rows_out: list[dict[str, Any]] = []
 
     for d in _daterange_inclusive(start_date, end_date):
@@ -280,6 +289,7 @@ def crawl(
 
         print(f"[INFO] Date {date_iso}", file=sys.stderr)
 
+        # Fetch spread market for the date.
         meta_ps, ps = _parse_market_page(
             url=ps_url,
             market="pointspread",
@@ -291,6 +301,7 @@ def crawl(
         if delay_s > 0:
             time.sleep(delay_s)
 
+        # Fetch moneyline market for the same date.
         meta_ml, ml = _parse_market_page(
             url=ml_url,
             market="moneyline",
@@ -306,7 +317,7 @@ def crawl(
                 time.sleep(delay_s)
             continue
 
-        # Join by (game_id, sportsbook)
+        # Join spread + moneyline rows using (game_id, sportsbook) as the stable key.
         keys = set(ps.keys()) | set(ml.keys())
         _dbg(debug, f"Join keys (game_id,sportsbook): {len(keys)}")
 
@@ -318,6 +329,7 @@ def crawl(
             ps_row: Optional[PointSpread] = ps.get(key)
             ml_row: Optional[Moneyline] = ml.get(key)
 
+            # Derive spread label from final score and home spread when both are available.
             spread_result = ""
             if (
                 meta.home_score is not None
@@ -355,8 +367,8 @@ def crawl(
         if delay_s > 0:
             time.sleep(delay_s)
 
-    # Write CSV (decimal odds)
-    with open(output_csv, "w", newline="", encoding="utf-8") as f:
+    # Write one normalized row per game with both markets and optional labels.
+    with open(output_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(
             [
@@ -404,7 +416,7 @@ def crawl(
                 ]
             )
 
-    print(f"Wrote {len(rows_out)} rows -> {output_csv}")
+    print(f"Wrote {len(rows_out)} rows -> {output_path}")
     return 0
 
 
@@ -417,7 +429,11 @@ def main() -> int:
     )
     ap.add_argument("--start-date", required=True, help="YYYY-MM-DD")
     ap.add_argument("--end-date", required=True, help="YYYY-MM-DD")
-    ap.add_argument("--output", default="sbr_mlb_odds.csv")
+    ap.add_argument(
+        "--output",
+        default=str(DEFAULT_OUTPUT_CSV),
+        help="Output CSV path (default: workspace dataset/sbr_mlb_odds.csv).",
+    )
     ap.add_argument("--delay", type=float, default=0.2, help="Delay between requests (seconds).")
     ap.add_argument("--retries", type=int, default=2, help="Retries per page fetch.")
     ap.add_argument("--timeout", type=int, default=30, help="HTTP request timeout (seconds).")

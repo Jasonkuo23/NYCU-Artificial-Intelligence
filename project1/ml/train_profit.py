@@ -26,6 +26,9 @@ except Exception:
     _HAS_XGB = False
 
 
+DEFAULT_DATA_CSV = Path(__file__).resolve().parents[2] / "dataset" / "all_2021_2025.csv"
+
+
 def _parse_date_iso(s: str) -> datetime:
     return datetime.strptime(s, "%Y-%m-%d")
 
@@ -242,6 +245,7 @@ def train_eval(
     random_state: int,
     out_predictions: Optional[Path],
 ) -> None:
+    # Load and normalize schema so both crawl output and legacy enriched files are supported.
     df = pd.read_csv(data_csv)
     df = _prepare_frame(df)
 
@@ -265,6 +269,7 @@ def train_eval(
 
     df = df[df[odds_home_col].notna() & df[odds_away_col].notna()].copy()
 
+    # Time-based holdout split: train before boundary, test on/after boundary.
     test_start = _parse_date_iso(test_start_date)
     is_test = df["date_dt"] >= test_start
 
@@ -274,7 +279,7 @@ def train_eval(
     if len(train_df) < 200 or len(test_df) < 50:
         raise SystemExit(f"Not enough rows after split: train={len(train_df)} test={len(test_df)}")
 
-    # Features
+    # Baseline feature set from final_report.md: team IDs + odds/spread + date parts.
     categorical = ["away_team", "home_team"]
 
     if market == "moneyline":
@@ -328,7 +333,7 @@ def train_eval(
     X_test = test_df[categorical + numeric]
     y_test = test_df[label_col].astype(int)
 
-    # Optional CV on train
+    # Optional time-series CV reports pre-holdout calibration quality.
     if cv_folds > 1:
         splitter = TimeSeriesSplit(n_splits=cv_folds)
         cv_scores = []
@@ -360,6 +365,7 @@ def train_eval(
     odds_away = test_df[odds_away_col].astype(float).to_numpy()
     y_true = y_test.to_numpy()
 
+    # Holdout EV backtest for selected market.
     if market == "moneyline":
         profits = [
             _profit_moneyline(
@@ -372,7 +378,7 @@ def train_eval(
             for i in range(len(test_df))
         ]
 
-        # baseline: use vig-adjusted implied probability from odds
+        # Baseline benchmark: vig-adjusted implied probability from market odds.
         base_p = test_df["ml_home_imp_nv"].astype(float).to_numpy()
         base_profits = [
             _profit_moneyline(
@@ -396,7 +402,7 @@ def train_eval(
             )
             for i in range(len(test_df))
         ]
-        # baseline: 0.5 (no edge)
+        # Baseline benchmark for spread: 0.5 probability (no informational edge).
         base_profits = [
             _profit_spread(
                 p_home_cover=0.5,
@@ -415,6 +421,7 @@ def train_eval(
     print(f"Strategy (model): bets={s.bets} profit={s.profit:.2f} ROI={s.roi*100:.2f}%")
     print(f"Baseline:          bets={b.bets} profit={b.profit:.2f} ROI={b.roi*100:.2f}%")
 
+    # Optional per-game audit file (probability, EV, pick side, and realized profit).
     if out_predictions is not None:
         out = test_df[["date", "game_id", "away_team", "home_team"]].copy()
         p_col = "p_home" if market == "moneyline" else "p_home_cover"
@@ -444,7 +451,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--data",
-        required=True,
+        default=str(DEFAULT_DATA_CSV),
         help="Input CSV (supports direct crawl output with result/spread_result or legacy enriched labels)",
     )
     ap.add_argument("--market", default="moneyline", choices=["moneyline", "spread"])

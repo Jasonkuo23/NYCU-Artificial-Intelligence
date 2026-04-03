@@ -290,6 +290,7 @@ def _fit_eval(
     odds_home_col: str = "ml_home_close_use",
     odds_away_col: str = "ml_away_close_use",
 ) -> EvalResult:
+    # Shared evaluator used by all report sections (baseline/training-size/balance/aug/PCA).
     if verbose:
         _log(
             f"start fit_eval experiment={experiment} setting={setting} model={model_name} "
@@ -299,6 +300,7 @@ def _fit_eval(
     work = df.copy()
     work = work[work[label_col].isin([0, 1])].copy()
 
+    # Time-respecting split used in the report: train on past seasons, test on holdout season.
     train_mask = work["year"] <= train_end_year
     test_mask = work["year"] == test_year
 
@@ -344,6 +346,7 @@ def _fit_eval(
 
     pipe = ImbPipeline(steps=steps)
 
+    # TimeSeriesSplit avoids leakage from future games into earlier folds.
     tscv = TimeSeriesSplit(n_splits=cv_folds)
     cv_metrics: list[dict[str, float]] = []
 
@@ -356,6 +359,7 @@ def _fit_eval(
         X_va = X_train.iloc[va_idx].copy()
         y_va = y_train.iloc[va_idx].to_numpy()
 
+        # Train-fold-only augmentation to match the report's "numeric noise" experiment.
         if use_aug:
             X_tr, y_tr = _augment_tabular(
                 X_tr,
@@ -387,6 +391,7 @@ def _fit_eval(
             }
         )
 
+    # Refit on full training set (optionally augmented) before final test evaluation.
     if use_aug:
         X_train_fit, y_train_fit = _augment_tabular(
             X_train,
@@ -419,6 +424,7 @@ def _fit_eval(
 
     tn, fp, fn, tp = confusion_matrix(y_test, y_pred, labels=[0, 1]).ravel().tolist()
 
+    # Apply EV policy and compute finance metrics (bets/profit/ROI) on holdout.
     bets, profit, roi = _profit_summary(
         probs_home=p_test,
         odds_home=test_df[odds_home_col].astype(float).to_numpy(),
@@ -604,7 +610,7 @@ def parse_args() -> argparse.Namespace:
     )
     ap.add_argument(
         "--data",
-        default="2021.csv",
+        default=str(Path(__file__).resolve().parents[2] / "dataset" / "all_2021_2025.csv"),
         help="Input CSV path (must already include labels like home_win, or scores/result columns).",
     )
     ap.add_argument("--out-dir", default="reports/experiments", help="Output directory for tables and plots.")
@@ -652,7 +658,7 @@ def main() -> int:
 
     results: list[EvalResult] = []
 
-    # 1) Baseline model comparison (also yields required multi-method CV metrics)
+    # Train baseline models (Section 5.1 / 6.1 in final_report.md).
     _log(f"experiment: baseline model comparison ({len(models)} models)")
     for model in models:
         results.append(
@@ -674,7 +680,7 @@ def main() -> int:
             )
         )
 
-    # 2) Training-size experiment
+    # Training data amount sensitivity (Section 5.2 / 6.2).
     start_year = int(df["year"].min())
     end_train = args.test_year - 1
     train_ends = list(range(start_year, end_train + 1))
@@ -703,7 +709,7 @@ def main() -> int:
                 )
             )
 
-    # 3) Balance/composition experiment
+    # Class balancing experiment: none vs class_weight vs SMOTE (Section 5.3 / 6.3).
     balance_models = ["lr", "rf"]
     if args.quick:
         balance_models = ["lr"]
@@ -736,7 +742,7 @@ def main() -> int:
                 )
             )
 
-    # 4) Data augmentation experiment (tabular jitter on train only)
+    # Data augmentation experiment: duplicate + small numeric jitter (Section 5.4 / 6.4).
     aug_models = ["lr", "rf"]
     if args.quick:
         aug_models = ["lr"]
@@ -763,7 +769,7 @@ def main() -> int:
                 )
             )
 
-    # 5) Dimensionality reduction experiment
+    # Dimensionality reduction experiment: PCA at 95% explained variance (Section 5.5 / 6.5).
     pca_models = ["lr", "rf"]
     if args.quick:
         pca_models = ["lr"]
