@@ -53,6 +53,7 @@ class TrainConfig:
     knn_max_test: int | None
     max_steps_per_epoch: int | None
     log_path: str | None
+    print_every: int
 
 
 def set_seed(seed: int) -> None:
@@ -68,6 +69,9 @@ def train_one_epoch(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     max_steps: int | None = None,
+    print_every: int = 0,
+    epoch: int | None = None,
+    total_epochs: int | None = None,
 ) -> float:
     model.train()
 
@@ -89,6 +93,13 @@ def train_one_epoch(
 
         running_loss += loss.item()
         num_batches += 1
+
+        if print_every and (step % print_every == 0):
+            avg = running_loss / max(1, num_batches)
+            prefix = ""
+            if epoch is not None and total_epochs is not None:
+                prefix = f"[epoch {epoch:03d}/{total_epochs}] "
+            print(f"{prefix}step {step:04d} - batch_loss: {loss.item():.4f} - avg_loss: {avg:.4f}")
 
         if max_steps is not None and step >= max_steps:
             break
@@ -134,6 +145,12 @@ def main() -> None:
         default=None,
         help="Optional: write metrics to a CSV file (epoch, loss, knn_acc)",
     )
+    parser.add_argument(
+        "--print-every",
+        type=int,
+        default=0,
+        help="Print progress every N batches (0 disables)",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--device",
@@ -162,6 +179,7 @@ def main() -> None:
         knn_max_test=args.knn_max_test,
         max_steps_per_epoch=args.max_steps_per_epoch,
         log_path=args.log_path,
+        print_every=args.print_every,
     )
 
     set_seed(cfg.seed)
@@ -225,6 +243,9 @@ def main() -> None:
             optimizer=optimizer,
             device=device,
             max_steps=cfg.max_steps_per_epoch,
+            print_every=cfg.print_every,
+            epoch=epoch,
+            total_epochs=cfg.epochs,
         )
 
         msg = f"Epoch {epoch:03d}/{cfg.epochs} - loss: {avg_loss:.4f}"
